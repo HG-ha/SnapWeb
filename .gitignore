@@ -1,0 +1,81 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 虚拟环境
+venv/
+.env
+.venv
+env/
+ENV/
+.env.*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.project
+.pydevproject
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# 日志和数据
+*.log
+logs/
+log/
+*.db
+*.sqlite3
+*.pid
+*.dump
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 项目特定
+screenshots/
+temp/
+config.local.yml
+secrets.yml
+private_key.pem
+*.key
+*.pem
+*.cert
+*.crt
+
+# Playwright
+.playwright-browser-data/
+browser-data/

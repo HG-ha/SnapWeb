@@ -40,10 +40,6 @@
     ```bash
     docker run -p 8000:8000 yiminger/snapweb:latest
     ```
-    *   `-d`: 后台运行容器。
-    *   `-p 8000:8000`: 将主机的 8000 端口映射到容器的 8000 端口。
-
-    服务将在 `http://localhost:8000` (或您的 Docker 主机 IP) 上可用。
 
 ### 2. 源代码运行
 
