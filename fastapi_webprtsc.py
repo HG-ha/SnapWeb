@@ -29,10 +29,13 @@ class ScreenshotRequest(BaseModel):
     height: Optional[str] = ""
     ua: Optional[str] = ""
     # 简化为直接使用元素类型和值
-    element_type: Optional[str] = ""  # 例如: id, class, name, xpath, css, tag, data-*, attr, 或 text
-    element_name: Optional[str] = ""  # 用于data-*属性或其他需要名称的情况 (text 类型时忽略)
-    element_value: Optional[str] = ""  # 元素的值或要匹配的文本
-    full_page: Optional[bool] = False # 控制是否进行完整页面截图，浏览器方法，非滚动截图
+    element_type: Optional[str] = ""  # 例如: id, class, name, xpath, css, tag, data-*, attr, text, canvas, iframe
+    element_name: Optional[str] = ""  # 用于data-*属性或其他需要名称的情况 (text/canvas/iframe 类型时忽略)
+    element_value: Optional[str] = ""  # 元素的值或要匹配的文本，对于canvas和iframe则是选择器
+    full_page: Optional[bool] = False  # 控制是否进行完整页面截图，浏览器方法，非滚动截图
+    wait_time: Optional[float] = 1.0   # 页面加载后的等待时间（秒），默认1秒
+    timeout: Optional[float] = 120.0    # 整个截图任务的超时时间（秒），默认120秒
+    wait_for_resources: Optional[bool] = False  # 是否等待页面所有资源（图片、视频等）加载完成，默认False
 
     @field_validator('*')
     @classmethod
@@ -42,6 +45,13 @@ class ScreenshotRequest(BaseModel):
     def get_element_info(self):
         """获取元素选择器信息"""
         if self.element_type and self.element_value:
+            # 对于canvas和iframe类型，element_name不是必需的
+            if self.element_type in ["canvas", "iframe"]:
+                return self.element_type, "", self.element_value
+            # 对于text类型，element_name不是必需的
+            elif self.element_type == "text":
+                return self.element_type, "", self.element_value
+            # 对于其他类型，返回完整信息
             return self.element_type, self.element_name, self.element_value
         return None, None, None
 
@@ -73,7 +83,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="网页截图API",
     description="基于Playwright的异步网页截图服务",
-    version="0.0.1",
+    version="0.0.2",
     lifespan=lifespan
 )
 
@@ -96,11 +106,12 @@ async def submit_screenshot(request: ScreenshotRequest):
     - **element_name**: 可选，元素名称(用于data-*或attr属性，text类型时忽略)
     - **element_value**: 可选，元素值或要匹配的文本
     - **full_page**: 可选 (仅当不指定元素时)，是否截取完整页面高度，默认False (截取视口高度)
+    - **wait_time**: 可选，页面加载后的等待时间（秒），默认1秒
+    - **timeout**: 可选，整个截图任务的超时时间（秒），默认90秒
     """
     element_type, element_name, element_value = request.get_element_info()
 
-    if element_type and element_value:
-        # 元素截图 (full_page 不适用于元素截图)
+    if element_type and element_value:        # 元素截图 (full_page 不适用于元素截图)
         task_id = await task_manager.create_task(
             browser_instance.prtScPath,
             url=str(request.url),
@@ -110,10 +121,11 @@ async def submit_screenshot(request: ScreenshotRequest):
             device=request.device,
             width=request.width,
             height=request.height,
-            ua=request.ua
+            ua=request.ua,
+            wait_time=request.wait_time,
+            timeout=request.timeout  # 添加 timeout 参数
         )
-    else:
-        # 全页面截图
+    else:        # 全页面截图
         task_id = await task_manager.create_task(
             browser_instance.prtSc,
             url=str(request.url),
@@ -121,7 +133,9 @@ async def submit_screenshot(request: ScreenshotRequest):
             width=request.width,
             height=request.height,
             ua=request.ua,
-            full_page=request.full_page # 传递 full_page 参数
+            full_page=request.full_page, # 传递 full_page 参数
+            wait_time=request.wait_time,
+            timeout=request.timeout  # 添加 timeout 参数
         )
     
     return {
@@ -144,6 +158,8 @@ async def sync_screenshot(request: ScreenshotRequest):
     - **element_name**: 可选，元素名称(用于data-*或attr属性，text类型时忽略)
     - **element_value**: 可选，元素值或要匹配的文本
     - **full_page**: 可选 (仅当不指定元素时)，是否截取完整页面高度，默认False (截取视口高度)
+    - **wait_time**: 可选，页面加载后的等待时间（秒），默认1秒
+    - **timeout**: 可选，整个截图任务的超时时间（秒），默认90秒
     
     返回：直接返回图片数据或错误信息
     """
@@ -161,9 +177,10 @@ async def sync_screenshot(request: ScreenshotRequest):
                     device=request.device,
                     width=request.width,
                     height=request.height,
-                    ua=request.ua
+                    ua=request.ua,
+                    wait_time=request.wait_time
                 ),
-                timeout=90.0
+                timeout=request.timeout
             )
         else:
             # 全页面截图
@@ -174,9 +191,10 @@ async def sync_screenshot(request: ScreenshotRequest):
                     width=request.width,
                     height=request.height,
                     ua=request.ua,
-                    full_page=request.full_page # 传递 full_page 参数
+                    full_page=request.full_page, # 传递 full_page 参数
+                    wait_time=request.wait_time
                 ),
-                timeout=90.0
+                timeout=request.timeout
             )
 
         # 增加超时处理
@@ -190,7 +208,7 @@ async def sync_screenshot(request: ScreenshotRequest):
         if not result.get("data"):
             return JSONResponse(
                 status_code=500,
-                content={"code": 500, "msg": "截图数据为空"}
+                content={"code": 500, "msg": "截图成功但没有数据返回"}
             )
             
         return StreamingResponse(
@@ -201,14 +219,13 @@ async def sync_screenshot(request: ScreenshotRequest):
         
     except asyncio.TimeoutError:
         return JSONResponse(
-            status_code=504,  # Gateway Timeout
-            content={"code": 504, "msg": "截图操作超时"}
+            status_code=504,
+            content={"code": 504, "msg": f"截图超时，超过{request.timeout}秒"}
         )
     except Exception as e:
-        print(f"同步截图异常: {str(e)}")
         return JSONResponse(
             status_code=500,
-            content={"code": 500, "msg": f"截图失败: {str(e)}"}
+            content={"code": 500, "msg": f"截图过程出错: {str(e)}"}
         )
 
 @app.get("/task/{task_id}/status")

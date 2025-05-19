@@ -39,7 +39,7 @@ if __name__ == "__main__":
         "fastapi_webprtsc:app",
         host="0.0.0.0",
         port=8000,
-        reload=False,  # 关闭 reload 避免事件循环相关问题
-        workers=1,     # 单进程模式，因为我们使用异步任务
+        reload=False,
+        workers=1,
         log_level="info"
     )

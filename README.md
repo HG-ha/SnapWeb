@@ -7,7 +7,7 @@
 *   **多种截图模式**：
     *   **全页面截图**：捕获整个可滚动页面的内容。
     *   **视口截图**：根据用户指定的宽度和高度截取浏览器视口区域。
-    *   **元素截图**：根据提供的选择器（CSS、XPath、ID、类名、标签名、属性、文本内容）截取特定 HTML 元素。
+    *   **元素截图**：根据提供的选择器（CSS、XPath、ID、类名、标签名、属性、文本内容、Canvas、iframe）截取特定 HTML 元素。
 *   **设备模拟**：
     *   内置多种设备预设（如 "pc", "phone", "tablet"）。
     *   支持自定义视口宽度、高度和 User-Agent。
@@ -15,7 +15,7 @@
     *   通过 `/screenshot/submit` 接口提交截图任务，立即返回任务 ID。
     *   通过 `/task/{task_id}/status` 查询任务状态。
     *   通过 `/task/{task_id}/result` 获取已完成任务的截图结果。
-    *   通过  **DELETE** `/task/{task_id}` 手动删除任务
+    *   通过  **DELETE** `/task/{task_id}` 手动删除任务。
 *   **同步截图**：
     *   通过 `/screenshot/sync` 接口直接获取截图结果，适用于需要即时响应的场景。
 *   **资源管理**：
@@ -24,6 +24,8 @@
     *   默认禁用浏览器下载行为。
 *   **系统监控**：
     *   通过 `/system/stats` 接口获取系统资源使用情况和任务统计。
+*   **增强的反爬虫机制**：
+    *   通过修改浏览器启动参数和注入JavaScript脚本，努力伪装浏览器指纹，减少被网站识别为自动化工具的风险。
 *   **Docker 支持**：提供 Dockerfile，方便容器化部署。
 
 ## 技术栈
@@ -218,20 +220,27 @@
 *   `height` (string, 可选): 自定义视口高度（CSS 像素）。如果提供，将覆盖设备预设的高度。
 *   `ua` (string, 可选): 自定义 User-Agent 字符串。如果提供，将覆盖设备预设或默认的 User-Agent。
 *   `element_type` (string, 可选): 用于元素截图的选择器类型。如果此参数和 `element_value` 都提供，则进行元素截图。
-    *   `"id"`: 通过元素 ID 定位 (如 `element_value="main-content"`)。
-    *   `"class"`: 通过类名定位 (如 `element_value="button-primary"`)。
-    *   `"name"`: 通过 `name` 属性定位 (如 `element_value="username"`)。
-    *   `"tag"`: 通过 HTML 标签名定位 (如 `element_value="h1"`)。
-    *   `"css"`: 使用完整的 CSS 选择器 (如 `element_value="#nav > li:first-child .link"`)。
-    *   `"xpath"`: 使用 XPath 表达式 (如 `element_value="//button[@id='submit']"`)。
-    *   `"attr"`: 通过通用属性定位。此时 `element_name` 为属性名，`element_value` 为属性值 (如 `element_type="attr"`, `element_name="role"`, `element_value="button"`)。
-    *   `"data"`: 通过 `data-*` 属性定位。此时 `element_name` 为 `data-` 后面的部分，`element_value` 为属性值 (如 `element_type="data"`, `element_name="testid"`, `element_value="login-button"`)。
-    *   `"text"`: 通过元素包含的文本内容定位（精确匹配）。`element_value` 为要匹配的文本。`element_name` 在此类型下被忽略。
-*   `element_name` (string, 可选): 当 `element_type` 为 `"attr"` 或 `"data"` 时使用，指定属性的名称。
+    *   `\"id\"`: 通过元素 ID 定位 (如 `element_value=\"main-content\"`)。
+    *   `\"class\"`: 通过类名定位 (如 `element_value=\"button-primary\"`)。
+    *   `\"name\"`: 通过 `name` 属性定位 (如 `element_value=\"username\"`)。
+    *   `\"tag\"`: 通过 HTML 标签名定位 (如 `element_value=\"h1\"`)。
+    *   `\"css\"`: 使用完整的 CSS 选择器 (如 `element_value=\"#nav > li:first-child .link\"`)。
+    *   `\"xpath\"`: 使用 XPath 表达式 (如 `element_value=\"//button[@id=\'submit\']\"`)。
+    *   `\"attr\"`: 通过通用属性定位。此时 `element_name` 为属性名，`element_value` 为属性值 (如 `element_type=\"attr\"`, `element_name=\"role\"`, `element_value=\"button\"`)。
+    *   `\"data\"`: 通过 `data-*` 属性定位。此时 `element_name` 为 `data-` 后面的部分，`element_value` 为属性值 (如 `element_type=\"data\"`, `element_name=\"testid\"`, `element_value=\"login-button\"`)。
+    *   `\"text\"`: 通过元素包含的文本内容定位（精确匹配）。`element_value` 为要匹配的文本。`element_name` 在此类型下被忽略。
+    *   `\"canvas\"`: 通过 CSS 选择器定位 `canvas` 元素。`element_value` 为 `canvas` 元素的 CSS 选择器 (如 `element_value=\"#my-canvas\"`)。`element_name` 在此类型下被忽略。
+    *   `\"iframe\"`: 通过 CSS 选择器定位 `iframe` 元素。`element_value` 为 `iframe` 元素的 CSS 选择器 (如 `element_value=\"iframe[name='my-frame']\"`)。`element_name` 在此类型下被忽略。
+*   `element_name` (string, 可选): 当 `element_type` 为 `\"attr\"` 或 `\"data\"` 时使用，指定属性的名称。
 *   `element_value` (string, 可选): 选择器的值，或当 `element_type` 为 `"text"` 时要匹配的文本。
 *   `full_page` (boolean, 可选): 仅当不进行元素截图时有效。
     *   `true`: 截取整个可滚动页面的高度。
     *   `false`: (默认值) 截图高度将严格等于请求中 `height` 参数指定的视口高度。如果未提供 `height`，则使用设备预设的视口高度。
+*   `wait_time` (float, 可选): 页面加载完成后的等待时间（秒），给页面留出足够的时间进行渲染、执行JavaScript或完成其他动态内容加载。默认值为1.0秒。
+*   `timeout` (float, 可选): 整个截图任务的超时时间（秒），如果超过这个时间仍未完成截图，任务将被取消并返回超时错误。默认值为120.0秒。
+*   `wait_for_resources` (boolean, 可选): 是否等待页面所有资源（图片、视频等）加载完成。
+    *   `true`: Playwright 将尝试等待网络活动静默（`networkidle`状态）后才认为页面加载完成。这有助于确保大部分资源（如图片、部分视频流的初始缓冲）加载完毕。但请注意，对于持续加载或延迟加载的内容，此选项可能无法完美覆盖所有情况。建议配合 `wait_time` 使用，以获得更稳定的结果。
+    *   `false`: (默认值) 主要等待DOM内容加载完成 (`domcontentloaded`)，不强制等待所有网络资源，适合快速截图或对资源完整性要求不高的场景。
 
 ## cURL 示例
 
@@ -292,6 +301,34 @@ curl -X 'POST' \
   --output baidu_text_button.png
 ```
 
+**4.1. 同步获取页面上的canvas元素内容**
+```bash
+curl -X 'POST' \
+  'http://127.0.0.1:8000/screenshot/sync' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "url": "https://www.example.com/canvas-demo",
+  "element_type": "canvas",
+  "element_value": "#my-canvas"
+}' \
+  --output canvas_content.png
+```
+
+**4.2. 同步获取iframe内的内容**
+```bash
+curl -X 'POST' \
+  'http://127.0.0.1:8000/screenshot/sync' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "url": "https://www.example.com/iframe-page",
+  "element_type": "iframe",
+  "element_value": "iframe[src*=\\"embedded-content\\"]"
+}' \
+  --output iframe_content.png
+```
+
 **5. 异步提交截图任务**
 ```bash
 curl -X 'POST' \
@@ -305,6 +342,39 @@ curl -X 'POST' \
 }'
 ```
 假设返回: `{"task_id":"some_unique_task_id", "status":"submitted", "message":"截图任务已提交"}`
+
+**5.1 使用自定义等待时间和超时时间的截图任务**
+```bash
+curl -X 'POST' \
+  'http://127.0.0.1:8000/screenshot/sync' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "url": "https://www.example.com/",
+  "device": "pc",
+  "full_page": true,
+  "wait_time": 5.0,
+  "timeout": 150.0
+}' \
+  --output example_with_longer_wait.png
+```
+
+**5.2 使用资源等待功能的截图任务 (建议配合足够的 wait_time 和 timeout)**
+```bash
+curl -X 'POST' \
+  'http://127.0.0.1:8000/screenshot/sync' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "url": "https://www.example.com/complex-page-with-many-resources",
+  "device": "pc",
+  "full_page": true,
+  "wait_for_resources": true,
+  "wait_time": 3.0,
+  "timeout": 180.0
+}' \
+  --output example_with_resources_loaded.png
+```
 
 **6. 查询任务状态**
 ```bash
@@ -346,3 +416,4 @@ curl -X 'DELETE' \
 *   对于需要登录或复杂交互才能到达的页面，当前版本的 API 可能无法直接截图。
 *   长时间运行的服务建议部署在具有足够 CPU 和内存资源的服务器上。
 *   `playwright install --with-deps` 在某些 Linux 发行版上可能无法完全自动安装所有依赖，请参考 Playwright 官方文档解决依赖问题。
+*   **反爬虫说明**：尽管已采取多种措施增强反爬虫能力，但反爬虫技术和策略是不断演进的。本服务不能保证100%绕过所有网站的检测。对于防护严密的网站，仍有被识别的风险。建议合理使用，并遵守目标网站的爬虫协议（如 `robots.txt`）。

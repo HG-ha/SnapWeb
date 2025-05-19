@@ -95,7 +95,8 @@ class AsyncPrtScPlaywright:
                 "--metrics-recording-only",
                 "--mute-audio",
                 "--no-first-run",
-                "--disable-features=IsolateOrigins,site-per-process"
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--disable-blink-features=AutomationControlled" # Added for anti-detection
             ]
             
             self._browser = await self._playwright.chromium.launch(
@@ -208,19 +209,149 @@ class AsyncPrtScPlaywright:
             
             page.set_default_timeout(90000)
             page.set_default_navigation_timeout(90000)
-            
-            # 路由拦截和初始化脚本保持不变
-            await page.route("**/*", lambda route: route.continue_() if route.request.resource_type in ["document", "script", "stylesheet", "image", "font"] else route.abort())
+              # 路由拦截和初始化脚本保持不变
+            await page.route("**/*", lambda route: route.continue_() if route.request.resource_type in ["document", "script", "stylesheet", "image", "font", "xhr", "fetch", "media", "texttrack", "eventsource", "manifest", "other"] else route.abort())
 
             await page.add_init_script("""
+                // --- WebDriver Flag ---
+                try {
+                    if (navigator.webdriver || Navigator.prototype.hasOwnProperty('webdriver')) {
+                        delete Navigator.prototype.webdriver; // Try to delete it from prototype
+                    }
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => false,
+                        configurable: true
+                    });
+                } catch (e) {
+                    console.warn('Failed to spoof navigator.webdriver: ' + e.toString());
+                }
+
+                // --- Spoof Navigator Properties ---
+                try {
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['zh-CN', 'zh', 'en-US', 'en'], // Default Accept-Language is zh-CN,zh;q=0.9,en;q=0.8
+                        configurable: true
+                    });
+                } catch (e) {
+                    console.warn('Failed to spoof navigator.languages: ' + e.toString());
+                }
+
+                try {
+                    Object.defineProperty(navigator, 'platform', {
+                        get: () => 'Win32', // Common platform, consider making dynamic based on UA
+                        configurable: true
+                    });
+                } catch (e) {
+                    console.warn('Failed to spoof navigator.platform: ' + e.toString());
+                }
+
+                // --- Plugins and MimeTypes ---
+                try {
+                    const MOCK_PLUGIN_ARRAY = [
+                        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format', mimeTypes: [] },
+                        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '', mimeTypes: [] },
+                        { name: 'Native Client', filename: 'internal-nacl-plugin', description: '', mimeTypes: [] }
+                    ];
+
+                    const MOCK_MIME_TYPE_ARRAY = [
+                        { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format', enabledPlugin: MOCK_PLUGIN_ARRAY[0] },
+                        { type: 'application/pdf', suffixes: 'pdf', description: '', enabledPlugin: MOCK_PLUGIN_ARRAY[1] },
+                        { type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable', enabledPlugin: MOCK_PLUGIN_ARRAY[2] },
+                        { type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable', enabledPlugin: MOCK_PLUGIN_ARRAY[2] }
+                    ];
+
+                    MOCK_PLUGIN_ARRAY[0].mimeTypes.push(MOCK_MIME_TYPE_ARRAY[0]);
+                    MOCK_PLUGIN_ARRAY[1].mimeTypes.push(MOCK_MIME_TYPE_ARRAY[1]);
+                    MOCK_PLUGIN_ARRAY[2].mimeTypes.push(MOCK_MIME_TYPE_ARRAY[2], MOCK_MIME_TYPE_ARRAY[3]);
+
+                    MOCK_PLUGIN_ARRAY.forEach(p => { Object.freeze(p.mimeTypes); Object.freeze(p); });
+                    Object.freeze(MOCK_MIME_TYPE_ARRAY);
+
+                    Object.defineProperty(navigator, 'plugins', { get: () => MOCK_PLUGIN_ARRAY, configurable: true });
+                    Object.defineProperty(navigator, 'mimeTypes', { get: () => MOCK_MIME_TYPE_ARRAY, configurable: true });
+                } catch (e) {
+                    console.warn('Failed to spoof plugins/mimeTypes: ' + e.toString());
+                }
+
+                // --- Spoof WebGL ---
+                try {
+                    const getParameterOld = WebGLRenderingContext.prototype.getParameter;
+                    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                        // UNMASKED_VENDOR_WEBGL (0x9245)
+                        if (parameter === 37445) return 'Intel Open Source Technology Center';
+                        // UNMASKED_RENDERER_WEBGL (0x9246)
+                        if (parameter === 37446) return 'Mesa DRI Intel(R) Ivybridge Mobile ';
+                        // VENDOR (0x1F00)
+                        if (parameter === 7936) return 'Intel Open Source Technology Center';
+                        // RENDERER (0x1F01)
+                        if (parameter === 7937) return 'Mesa DRI Intel(R) Ivybridge Mobile ';
+                        
+                        if (getParameterOld.apply) {
+                            return getParameterOld.apply(this, arguments);
+                        }
+                        return null; // Fallback
+                    };
+                    // Hide the override from toString
+                    WebGLRenderingContext.prototype.getParameter.toString = getParameterOld.toString.bind(getParameterOld);
+                } catch (e) {
+                    console.warn('Failed to spoof WebGL: ' + e.toString());
+                }
+
+                // --- Permissions API ---
+                try {
+                    const originalPermissionsQuery = navigator.permissions.query;
+                    navigator.permissions.query = (parameters) => {
+                        try {
+                            if (parameters.name === 'notifications') {
+                                return Promise.resolve({ state: Notification.permission || 'default' });
+                            }
+                            if (originalPermissionsQuery.call) {
+                                return originalPermissionsQuery.call(navigator.permissions, parameters);
+                            }
+                            return Promise.reject(new Error('Original permissions.query not callable.'));
+                        } catch (e) {
+                            console.warn('navigator.permissions.query inner failed: ' + e.toString());
+                            return Promise.reject(e);
+                        }
+                    };
+                    navigator.permissions.query.toString = originalPermissionsQuery.toString.bind(originalPermissionsQuery);
+                } catch (e) {
+                    console.warn('Failed to spoof navigator.permissions.query: ' + e.toString());
+                }
+
+                // --- Notification Permission ---
+                try {
+                    if (typeof Notification !== 'undefined' && Notification.permission) {
+                        Object.defineProperty(Notification, 'permission', {
+                            get: () => 'default', // 'denied' in headless often, 'default' is more neutral
+                            configurable: true
+                        });
+                    }
+                } catch (e) {
+                    console.warn('Failed to spoof Notification.permission: ' + e.toString());
+                }
+
+                // --- Other Navigator Properties ---
+                try {
+                    if (navigator.deviceMemory === undefined || navigator.deviceMemory === 0) {
+                        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8, configurable: true });
+                    }
+                    if (navigator.hardwareConcurrency === undefined || navigator.hardwareConcurrency === 0) {
+                        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 4, configurable: true });
+                    }
+                } catch (e) {
+                    console.warn('Failed to spoof deviceMemory/hardwareConcurrency: ' + e.toString());
+                }
+
+                // --- User's existing event listeners and overrides (integrated) ---
                 window.addEventListener('beforeunload', (event) => {
                     event.preventDefault();
-                    return event.returnValue = "Navigation blocked";
+                    event.returnValue = "Navigation blocked";
                 });
                 document.addEventListener('contextmenu', event => event.preventDefault());
                 document.addEventListener('selectstart', event => event.preventDefault());
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); // 尝试隐藏webdriver标志
                 window.open = function() { return null; };
+
             """)
             
             page_id = f"page_{id(page)}"
@@ -260,17 +391,26 @@ class AsyncPrtScPlaywright:
             # finally: # pop已经移除了元素
             #     pass 
     
-    async def _navigate_to_url(self, page: Page, url: str, wait_until: str = "domcontentloaded", max_retries: int = 3) -> bool:
-        """导航到URL，包含重试机制和改进的安全措施"""
+    async def _navigate_to_url(self, page: Page, url: str, wait_until: str = "domcontentloaded", max_retries: int = 3, wait_for_resources: bool = False) -> bool:
+        """
+        导航到URL，包含重试机制和改进的安全措施
+        
+        参数:
+            page: Playwright页面对象
+            url: 要导航到的URL
+            wait_until: 导航完成判断标准，可以是 'domcontentloaded', 'load', 'networkidle'
+            max_retries: 最大重试次数
+            wait_for_resources: 是否等待页面所有资源加载完成
+        """
         for attempt in range(max_retries):
-            try:
-                # 设置请求拦截
-                await page.route("**/*", lambda route: route.continue_() if route.request.resource_type in ["document", "script", "stylesheet", "image"] else route.abort())
+            try:                # 设置请求拦截（允许所有常见资源类型）
+                await page.route("**/*", lambda route: route.continue_() if route.request.resource_type in ["document", "script", "stylesheet", "image", "font", "xhr", "fetch", "media", "texttrack", "eventsource", "manifest", "other"] else route.abort())
                 
-                # 导航到页面
+                # 导航到页面，根据wait_for_resources参数决定等待策略
+                actual_wait_until = "networkidle" if wait_for_resources else wait_until
                 response = await page.goto(
                     url, 
-                    wait_until=wait_until, 
+                    wait_until=actual_wait_until, 
                     timeout=90000
                 )
                 
@@ -310,8 +450,20 @@ class AsyncPrtScPlaywright:
                 
         return False
         
-    async def prtSc(self, url, device="pc", width="", height="", ua="", full_page: bool = True) -> Dict[str, Any]:
-        """获取网页截图"""
+    async def prtSc(self, url, device="pc", width="", height="", ua="", full_page: bool = True, wait_time: float = 1.0, wait_for_resources: bool = False) -> Dict[str, Any]:
+        """
+        获取网页截图
+        
+        参数:
+            url: 网页URL
+            device: 设备类型 ('pc', 'phone', 'tablet')
+            width: 自定义宽度
+            height: 自定义高度
+            ua: 自定义User-Agent
+            full_page: 是否截取完整页面高度
+            wait_time: 页面加载后额外等待时间（秒）
+            wait_for_resources: 是否等待所有资源（图片、视频等）加载完成
+        """
         page_id = None
         try:
             device_config = self._get_device_config(device, width, height)
@@ -323,11 +475,13 @@ class AsyncPrtScPlaywright:
             if ua:
                 await page.set_extra_http_headers({"User-Agent": ua})
             
-            navigation_success = await self._navigate_to_url(page, url)
+            navigation_success = await self._navigate_to_url(page, url, wait_for_resources=wait_for_resources)
             if not navigation_success:
                 return {"code": 404, "msg": "导航到页面失败"}
             
-            await asyncio.sleep(1)
+            # 使用用户指定的等待时间
+            logger.info(f"等待页面稳定，等待时间: {wait_time}秒")
+            await asyncio.sleep(wait_time)
             
             # 根据 full_page 参数决定截图方式
             screenshot_bytes = await page.screenshot(
@@ -345,8 +499,22 @@ class AsyncPrtScPlaywright:
             if page_id:
                 await self._close_page(page_id)
     
-    async def prtScPath(self, url, elename, eletype, elevalue, device="pc", width="", height="", ua="") -> Dict[str, Any]:
-        """获取页面元素截图"""
+    async def prtScPath(self, url, elename, eletype, elevalue, device="pc", width="", height="", ua="", wait_time: float = 1.0, wait_for_resources: bool = False) -> Dict[str, Any]:
+        """
+        获取页面元素截图
+        
+        参数:
+            url: 网页URL
+            elename: 元素名称
+            eletype: 元素类型 (包括 id, class, name, xpath, css, tag, data, attr, text, canvas, iframe)
+            elevalue: 元素值
+            device: 设备类型
+            width: 自定义宽度
+            height: 自定义高度
+            ua: 自定义User-Agent
+            wait_time: 页面加载后额外等待时间（秒）
+            wait_for_resources: 是否等待所有资源（图片、视频等）加载完成
+        """
         page_id = None
         try:
             # 配置设备参数
@@ -359,15 +527,15 @@ class AsyncPrtScPlaywright:
             # 设置自定义UA（如果提供）
             if ua:
                 await page.set_extra_http_headers({"User-Agent": ua})
-            
-            # 导航到URL，优先使用domcontentloaded
-            navigation_success = await self._navigate_to_url(page, url)
+              # 导航到URL，根据wait_for_resources参数决定等待策略
+            navigation_success = await self._navigate_to_url(page, url, wait_for_resources=wait_for_resources)
             
             if not navigation_success:
                 return {"code": 404, "msg": "导航到页面失败"}
             
-            await asyncio.sleep(0.5) # 导航后短暂等待，确保页面初步渲染
-
+            # 使用用户指定的等待时间
+            logger.info(f"等待页面稳定，元素截图等待时间: {wait_time}秒")
+            await asyncio.sleep(wait_time) # 按照用户指定的时间等待，确保页面充分渲染            
             try:
                 screenshot_bytes = None
                 if eletype == "text":
@@ -389,6 +557,35 @@ class AsyncPrtScPlaywright:
                         if "strict mode violation" in str(e).lower() or "matches multiple elements" in str(e).lower():
                              return {"code": 400, "msg": f"找到多个匹配文本 '{elevalue}' 的元素。请使用更精确的文本或不同的选择策略。"}
                         return {"code": 500, "msg": f"文本元素截图时发生Playwright错误: {str(e)}"}
+                # 特殊处理canvas元素
+                elif eletype == "canvas":
+                    # 构建canvas选择器
+                    if elevalue.startswith("xpath=") or elevalue.startswith("//"):
+                        # 用户提供了xpath方式
+                        selector = elevalue if elevalue.startswith("xpath=") else f"xpath={elevalue}"
+                    else:
+                        # 否则作为CSS选择器处理
+                        selector = elevalue
+                        
+                    # 对canvas进行截图
+                    screenshot_bytes = await self._screenshot_canvas(page, selector)
+                    if not screenshot_bytes:
+                        return {"code": 404, "msg": f"无法截取canvas内容: {selector}"}
+                        
+                # 特殊处理iframe元素
+                elif eletype == "iframe":
+                    # 构建iframe选择器
+                    if elevalue.startswith("xpath=") or elevalue.startswith("//"):
+                        # 用户提供了xpath方式
+                        selector = elevalue if elevalue.startswith("xpath=") else f"xpath={elevalue}"
+                    else:
+                        # 否则作为CSS选择器处理
+                        selector = elevalue
+                        
+                    # 对iframe内容进行截图
+                    screenshot_bytes = await self._screenshot_iframe(page, selector)
+                    if not screenshot_bytes:
+                        return {"code": 404, "msg": f"无法截取iframe内容: {selector}"}
                 else:
                     # 根据元素类型构建选择器
                     selector = None
@@ -501,6 +698,141 @@ class AsyncPrtScPlaywright:
             
         return config
 
+    async def _screenshot_canvas(self, page: Page, selector: str) -> bytes:
+        """
+        截取canvas元素的内容
+        
+        参数:
+            page: Playwright页面对象
+            selector: 指向canvas元素的选择器
+            
+        返回:
+            canvas元素的截图数据(bytes)或None
+        """
+        try:
+            # 等待并获取canvas元素
+            canvas = await page.wait_for_selector(selector, state="visible", timeout=30000)
+            
+            if not canvas:
+                logger.error(f"未找到canvas元素: {selector}")
+                return None
+                
+            # 先确保元素在视口中
+            await canvas.scroll_into_view_if_needed()
+            await asyncio.sleep(0.5)  # 滚动后短暂等待
+            
+            # 尝试使用JavaScript获取canvas的内容为base64编码的数据URL
+            data_url = await page.evaluate("""(selector) => {
+                const canvas = document.querySelector(selector);
+                if (!canvas || !(canvas instanceof HTMLCanvasElement)) {
+                    return null;
+                }
+                // 尝试获取canvas内容为PNG格式的dataURL
+                try {
+                    return canvas.toDataURL('image/png');
+                } catch (e) {
+                    // 如果canvas是跨域的，toDataURL可能会失败
+                    console.error('无法获取canvas内容:', e);
+                    return null;
+                }
+            }""", selector)
+            
+            if data_url:
+                # 从data URL提取base64编码的图像数据
+                # 格式为: "data:image/png;base64,..."
+                base64_data = data_url.split(',')[1]
+                import base64
+                image_bytes = base64.b64decode(base64_data)
+                return image_bytes
+            else:
+                # 如果无法通过JavaScript获取，退回到对元素的常规截图
+                logger.warning(f"无法通过JavaScript获取canvas内容，使用元素截图代替: {selector}")
+                return await canvas.screenshot(type="png")
+                
+        except Exception as e:
+            logger.error(f"截取canvas内容时出错: {str(e)}")
+            return None
+            
+    async def _screenshot_iframe(self, page: Page, selector: str) -> bytes:
+        """
+        截取iframe元素内的内容
+        
+        参数:
+            page: Playwright页面对象
+            selector: 指向iframe元素的选择器
+            
+        返回:
+            iframe内容的截图数据(bytes)或None
+        """
+        try:
+            # 等待iframe元素可见
+            iframe_element = await page.wait_for_selector(selector, state="visible", timeout=30000)
+            
+            if not iframe_element:
+                logger.error(f"未找到iframe元素: {selector}")
+                return None
+                
+            # 先确保iframe元素在视口中
+            await iframe_element.scroll_into_view_if_needed()
+            await asyncio.sleep(0.5)  # 滚动后短暂等待
+            
+            # 获取iframe的内容框架
+            frame = None
+            
+            # 尝试通过name或id属性定位框架
+            frame_props = await page.evaluate("""(selector) => {
+                const iframe = document.querySelector(selector);
+                if (!iframe) return null;
+                return {
+                    name: iframe.name || '',
+                    id: iframe.id || '',
+                    src: iframe.src || ''
+                };
+            }""", selector)
+            
+            if frame_props:
+                # 尝试通过name定位框架
+                if frame_props['name']:
+                    try:
+                        frame = page.frame(name=frame_props['name'])
+                    except:
+                        pass
+                        
+                # 尝试通过URL定位框架
+                if not frame and frame_props['src']:
+                    try:
+                        frames = page.frames
+                        for f in frames:
+                            if f.url and frame_props['src'] in f.url:
+                                frame = f
+                                break
+                    except:
+                        pass
+                        
+            # 如果上面的方法都失败了，尝试通过选择器直接获取框架
+            if not frame:
+                try:
+                    # 通过选择器获取框架
+                    frame = await page.frame_locator(selector).first
+                except Exception as e:
+                    logger.error(f"通过选择器获取iframe框架失败: {str(e)}")
+            
+            # 如果成功获取到框架，截取整个框架内容
+            if frame:
+                # 获取iframe内容区域的尺寸
+                size = await iframe_element.bounding_box()
+                if size:
+                    # 截取整个框架内容
+                    return await frame.screenshot(type="png")
+            
+            # 如果无法获取框架内容，退回到直接截取iframe元素
+            logger.warning(f"无法获取iframe内容，使用元素截图代替: {selector}")
+            return await iframe_element.screenshot(type="png")
+                
+        except Exception as e:
+            logger.error(f"截取iframe内容时出错: {str(e)}")
+            return None
+        
 
 # 如果直接运行此文件，执行测试
 if __name__ == "__main__":

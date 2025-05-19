@@ -36,7 +36,8 @@ class TaskManager:
                 "started_at": None,
                 "completed_at": None,
                 "progress": 0,
-                "task_obj": None # 用于存储 asyncio.Task 对象
+                "task_obj": None, # 用于存储 asyncio.Task 对象
+                "timeout": kwargs.pop("timeout", 90.0)  # 默认90秒超时，从kwargs中提取
             }
             # 将任务放入队列
             await self.task_queue.put(task_id)
@@ -88,18 +89,44 @@ class TaskManager:
                     self.running_tasks.add(task_id)
 
                 try:
-                    # 执行任务
+                    # 执行任务，添加超时控制
                     func = task_info["func"]
                     kwargs = task_info["kwargs"]
-                    result = await func(**kwargs)
-
+                    timeout = task_info["timeout"]
+                    
+                    # 创建任务并存储以便于取消
+                    task = asyncio.create_task(func(**kwargs))
+                    
                     async with self.lock:
-                        self.tasks[task_id].update({
-                            "status": TaskStatus.COMPLETED,
-                            "result": result,
-                            "completed_at": time.time(),
-                            "progress": 100
-                        })
+                        self.tasks[task_id]["task_obj"] = task
+                    
+                    # 等待任务完成或超时
+                    try:
+                        result = await asyncio.wait_for(task, timeout=timeout)
+                        
+                        async with self.lock:
+                            self.tasks[task_id].update({
+                                "status": TaskStatus.COMPLETED,
+                                "result": result,
+                                "completed_at": time.time(),
+                                "progress": 100
+                            })
+                            
+                    except asyncio.TimeoutError:
+                        # 任务超时，取消任务并记录
+                        if not task.done():
+                            task.cancel()
+                            try:
+                                await task
+                            except asyncio.CancelledError:
+                                pass
+                            
+                        async with self.lock:
+                            self.tasks[task_id].update({
+                                "status": TaskStatus.FAILED,
+                                "error_details": f"任务执行超时 (超过 {timeout} 秒)",
+                                "completed_at": time.time()
+                            })
 
                 except Exception as e:
                     async with self.lock:
