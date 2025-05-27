@@ -26,6 +26,7 @@
     *   通过 `/system/stats` 接口获取系统资源使用情况和任务统计。
 *   **增强的反爬虫机制**：
     *   通过修改浏览器启动参数和注入JavaScript脚本，努力伪装浏览器指纹，减少被网站识别为自动化工具的风险。
+    *   支持用户自定义JavaScript代码注入
 *   **Docker 支持**：提供 Dockerfile，方便容器化部署。
 
 ## 技术栈
@@ -241,6 +242,7 @@
 *   `wait_for_resources` (boolean, 可选): 是否等待页面所有资源（图片、视频等）加载完成。
     *   `true`: Playwright 将尝试等待网络活动静默（`networkidle`状态）后才认为页面加载完成。这有助于确保大部分资源（如图片、部分视频流的初始缓冲）加载完毕。但请注意，对于持续加载或延迟加载的内容，此选项可能无法完美覆盖所有情况。建议配合 `wait_time` 使用，以获得更稳定的结果。
     *   `false`: (默认值) 主要等待DOM内容加载完成 (`domcontentloaded`)，不强制等待所有网络资源，适合快速截图或对资源完整性要求不高的场景。
+*   `custom_js` (string, 可选): 页面加载后、截图前注入并执行的自定义JavaScript代码。可用于自动填写表单、触发页面交互等。代码将在截图前在页面上下文中执行，适合需要动态操作页面的场景。
 
 ## cURL 示例
 
@@ -374,6 +376,19 @@ curl -X 'POST' \
   "timeout": 180.0
 }' \
   --output example_with_resources_loaded.png
+```
+
+**5.3 使用 custom_js 参数自动操作页面并截图**
+```bash
+# 使用itdog对baidu进行测速并获得结果
+
+curl --location --request POST 'http://127.0.0.1:8000/screenshot/sync' \
+--header 'User-Agent: Apifox/1.0.0 (https://apifox.com)' \
+--form 'url="https://www.itdog.cn/http/"' \
+--form 'custom_js="document.getElementById(\"host\").value=\"https://www.baidu.com\";check_form(\"fast\");setTimeout(function(){},1e4);"' \
+--form 'wait_time="10"' \
+--form 'element_type="xpath"' \
+--form 'element_value="//*[@id=\"china_map\"]/div[1]/canvas"'
 ```
 
 **6. 查询任务状态**

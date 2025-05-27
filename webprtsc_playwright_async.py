@@ -1,10 +1,16 @@
 import asyncio
+import sys
+
+# Set event loop policy for Windows at the very top
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 import gc
 import time
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from playwright.async_api import async_playwright, Page, Error, TimeoutError
 import logging
-import sys
+import uuid
 
 # 设置日志
 logging.basicConfig(
@@ -161,57 +167,107 @@ class AsyncPrtScPlaywright:
         gc.collect()
         
         self._last_cleanup = current_time
-        logger.info(f"资源清理完成，当前页面数量: {len(self._pages)}")
-            
-    async def _create_page(self, device_config=None):
-        """创建新的页面对象"""
+    
+    def _construct_selector(self, eletype: str, elevalue: str, elename: str = "") -> str:
+        """
+        根据元素类型、名称和值构建选择器
+        
+        参数:
+            eletype: 元素类型 (id, class, name, xpath, css, tag, data, attr, text, canvas, iframe)
+            elevalue: 元素值
+            elename: 元素名称 (对于data、attr类型使用)
+        
+        返回:
+            构建的选择器字符串
+        """
+        eletype = eletype.lower().strip()
+        
+        # 处理空值情况
+        if not elevalue:
+            logger.warning(f"构建选择器时元素值为空: 类型={eletype}, 名称={elename}")
+            return ""
+        
         try:
-            if not self._initialized:
-                await self.initialize()
-            
-            if not self._browser:
-                raise Exception("浏览器未初始化")
-
-            # 确保有默认配置（如果未提供）
-            effective_device_config = device_config or self.device_presets["pc"]
-
-            # 准备上下文选项
-            context_options = DEFAULT_CONTEXT_OPTIONS.copy() # 从全局默认开始
-            context_options["extra_http_headers"] = (DEFAULT_CONTEXT_OPTIONS.get("extra_http_headers") or {}).copy() # 深拷贝
-
-            # 应用设备特定配置
-            context_options.update({
-                "viewport": effective_device_config["viewport"],
-                "device_scale_factor": effective_device_config["device_scale_factor"],
-                "is_mobile": effective_device_config["is_mobile"],
-                "has_touch": effective_device_config["has_touch"],
-            })
-            
-            # 如果设备配置提供了User-Agent，则使用它，否则使用默认UA（如果DEFAULT_CONTEXT_OPTIONS中定义了）
-            # 或者Playwright的默认UA（如果两者都未定义）
-            if effective_device_config.get("user_agent"):
-                context_options["user_agent"] = effective_device_config["user_agent"]
-            elif not context_options.get("user_agent"): # 如果默认选项里也没有UA
-                 # 使用Playwright的默认UA，或者根据is_mobile选择一个通用UA
-                if effective_device_config["is_mobile"]:
-                    # 可以设置一个通用的移动UA作为后备
-                    context_options["user_agent"] = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.0.0 Mobile Safari/537.36"
+            if eletype == "id":
+                return f"#{elevalue}"
+            elif eletype == "class":
+                return f".{elevalue}"
+            elif eletype == "name":
+                return f"[name='{elevalue}']"
+            elif eletype == "xpath":
+                return elevalue  # xpath直接返回值
+            elif eletype == "css":
+                return elevalue  # css选择器直接返回值
+            elif eletype == "tag":
+                return elevalue  # 标签名直接返回
+            elif eletype == "data":
+                attr_name = elename or "data-id"  # 默认为data-id
+                return f"[{attr_name}='{elevalue}']"
+            elif eletype == "attr":
+                if not elename:
+                    logger.warning("使用attr类型选择器时未提供属性名")
+                    return ""
+                return f"[{elename}='{elevalue}']"
+            elif eletype == "text":
+                # 使用XPath定位包含特定文本的元素
+                return f"//*[contains(text(), '{elevalue}')]"
+            elif eletype == "canvas":
+                # 处理canvas元素
+                if elevalue.lower() == "first":
+                    return "canvas"  # 页面中第一个canvas
+                elif elevalue.isdigit():
+                    # 第n个canvas
+                    index = int(elevalue) - 1
+                    return f"canvas:nth-of-type({index + 1})"
                 else:
-                    context_options["user_agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36"
+                    # 按ID或选择器查找
+                    if elevalue.startswith("#") or elevalue.startswith("."):
+                        return elevalue
+                    return f"canvas#{elevalue}"
+            elif eletype == "iframe":
+                # 处理iframe元素
+                if elevalue.lower() == "first":
+                    return "iframe"  # 页面中第一个iframe
+                elif elevalue.isdigit():
+                    # 第n个iframe
+                    index = int(elevalue) - 1
+                    return f"iframe:nth-of-type({index + 1})"
+                else:
+                    # 按ID或选择器查找
+                    if elevalue.startswith("#") or elevalue.startswith("."):
+                        return elevalue
+                    return f"iframe#{elevalue}"
+            else:
+                logger.warning(f"不支持的元素类型: {eletype}")
+                return ""
+        except Exception as e:
+            logger.error(f"构建选择器时发生错误: {e}")
+            return ""
 
-
-            # 如果设备配置有额外的HTTP头，合并它们
-            if "extra_http_headers" in effective_device_config:
-                context_options["extra_http_headers"].update(effective_device_config["extra_http_headers"])
-
-            context = await self._browser.new_context(**context_options)
-            page = await context.new_page()
             
-            page.set_default_timeout(90000)
-            page.set_default_navigation_timeout(90000)
-              # 路由拦截和初始化脚本保持不变
-            await page.route("**/*", lambda route: route.continue_() if route.request.resource_type in ["document", "script", "stylesheet", "image", "font", "xhr", "fetch", "media", "texttrack", "eventsource", "manifest", "other"] else route.abort())
+    async def _create_page(self, device_config=None, custom_js: Optional[str] = None):
+        if not self._browser:
+            logger.error("浏览器未初始化。请先调用 initialize()。")
+            raise RuntimeError("浏览器未初始化")
 
+        context_options = DEFAULT_CONTEXT_OPTIONS.copy()
+        if device_config:
+            context_options.update({
+                "user_agent": device_config.get("user_agent"),
+                "viewport": device_config.get("viewport"),
+                "device_scale_factor": device_config.get("device_scale_factor"),
+                "is_mobile": device_config.get("is_mobile"),
+                "has_touch": device_config.get("has_touch"),
+            })
+        
+        # 为每个页面创建独立的浏览器上下文
+        browser_context = await self._browser.new_context(**context_options)
+        page = await browser_context.new_page()
+        page_id = str(uuid.uuid4())
+        self._pages[page_id] = {"page": page, "context": browser_context, "created_at": time.time()}
+
+        try:
+            # 注入通用的反检测脚本
             await page.add_init_script("""
                 // --- WebDriver Flag ---
                 try {
@@ -259,6 +315,7 @@ class AsyncPrtScPlaywright:
                         { type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable', enabledPlugin: MOCK_PLUGIN_ARRAY[2] },
                         { type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable', enabledPlugin: MOCK_PLUGIN_ARRAY[2] }
                     ];
+
 
                     MOCK_PLUGIN_ARRAY[0].mimeTypes.push(MOCK_MIME_TYPE_ARRAY[0]);
                     MOCK_PLUGIN_ARRAY[1].mimeTypes.push(MOCK_MIME_TYPE_ARRAY[1]);
@@ -353,21 +410,17 @@ class AsyncPrtScPlaywright:
                 window.open = function() { return null; };
 
             """)
+
+            # 注意：custom_js 现在不在这里执行，而是在页面加载完成后执行
             
-            page_id = f"page_{id(page)}"
-            self._pages[page_id] = {
-                "page": page,
-                "context": context, # 保存上下文，以便关闭
-                "created_at": time.time(),
-                "last_used": time.time()
-            }
-            
-            return page_id
-            
+            return page_id, page
         except Exception as e:
-            logger.error(f"创建页面时出错: {e}")
+            logger.error(f"创建页面 {page_id} 时出错: {e}")
+            # 如果出错，确保关闭已创建的页面和上下文
+            if page_id in self._pages:
+                await self._close_page_internal(page_id) # 使用内部关闭方法避免锁问题
             raise
-    
+
     async def _get_page(self, page_id):
         """获取现有页面"""
         page_info = self._pages.get(page_id)
@@ -390,7 +443,7 @@ class AsyncPrtScPlaywright:
                 logger.error(f"关闭页面 {page_id} 或其上下文时出错: {e}")
             # finally: # pop已经移除了元素
             #     pass 
-    
+            
     async def _navigate_to_url(self, page: Page, url: str, wait_until: str = "domcontentloaded", max_retries: int = 3, wait_for_resources: bool = False) -> bool:
         """
         导航到URL，包含重试机制和改进的安全措施
@@ -427,6 +480,7 @@ class AsyncPrtScPlaywright:
                     
                     # 注入额外的安全措施
                     await page.evaluate("""
+
                         // 禁用alert等对话框
                         window.alert = window.confirm = window.prompt = function() {};
                         
@@ -450,7 +504,7 @@ class AsyncPrtScPlaywright:
                 
         return False
         
-    async def prtSc(self, url, device="pc", width="", height="", ua="", full_page: bool = True, wait_time: float = 1.0, wait_for_resources: bool = False) -> Dict[str, Any]:
+    async def prtSc(self, url, device="pc", width="", height="", ua="", full_page: bool = True, wait_time: float = 1.0, wait_for_resources: bool = False, custom_js: Optional[str] = None) -> Dict[str, Any]:
         """
         获取网页截图
         
@@ -463,43 +517,57 @@ class AsyncPrtScPlaywright:
             full_page: 是否截取完整页面高度
             wait_time: 页面加载后额外等待时间（秒）
             wait_for_resources: 是否等待所有资源（图片、视频等）加载完成
+            custom_js: 在页面加载完成后执行的自定义JavaScript代码
         """
         page_id = None
+        start_time = time.time()
         try:
             device_config = self._get_device_config(device, width, height)
-            logger.info(f"使用设备配置: {device_config}")
+            if ua:  # 如果提供了ua，则覆盖设备配置中的ua
+                device_config["user_agent"] = ua
             
-            page_id = await self._create_page(device_config)
-            page = await self._get_page(page_id)
+            page_id, page = await self._create_page(device_config=device_config)
+
+            navigate_success = await self._navigate_to_url(page, url, wait_until="load", wait_for_resources=wait_for_resources) # 更改为 "load"
+            if not navigate_success:
+                raise Exception(f"导航到 {url} 失败")
+
+            # 在页面加载完成后执行自定义JS脚本
+            if custom_js:
+                try:
+                    await page.evaluate(custom_js)
+                    logger.info("自定义JS脚本执行成功")
+                except Exception as e:
+                    logger.warning(f"执行自定义JS脚本时出错: {e}")
             
-            if ua:
-                await page.set_extra_http_headers({"User-Agent": ua})
+            if wait_time > 0:
+                await asyncio.sleep(wait_time)
+
+            # 截图前执行滚动以确保动态内容加载
+            if full_page:
+                await self._scroll_page_for_full_screenshot(page)
+
+
+            screenshot_bytes = await page.screenshot(full_page=full_page, type="png") # Playwright 的 full_page 选项
             
-            navigation_success = await self._navigate_to_url(page, url, wait_for_resources=wait_for_resources)
-            if not navigation_success:
-                return {"code": 404, "msg": "导航到页面失败"}
-            
-            # 使用用户指定的等待时间
-            logger.info(f"等待页面稳定，等待时间: {wait_time}秒")
-            await asyncio.sleep(wait_time)
-            
-            # 根据 full_page 参数决定截图方式
-            screenshot_bytes = await page.screenshot(
-                full_page=full_page, # 使用传入的 full_page 参数
-                type="png",
-                scale="css"
-            )
-            
-            return {"code": 200, "msg": "成功", "data": screenshot_bytes}
-            
+            end_time = time.time()
+            logger.info(f"截图成功: {url}, 设备: {device}, 耗时: {end_time - start_time:.2f}s")
+            return {"status": "success", "image_bytes": screenshot_bytes, "message": "截图成功"}
+
+        except TimeoutError as e:
+            logger.error(f"截图超时: {url}, 错误: {e}")
+            return {"status": "error", "message": f"页面加载或截图超时: {e}"}
+        except Error as e:  # Playwright特定错误
+            logger.error(f"Playwright 截图错误: {url}, 错误: {e}")
+            return {"status": "error", "message": f"Playwright操作失败: {e}"}
         except Exception as e:
-            logger.error(f"截图错误: {str(e)}")
-            return {"code": 500, "msg": f"截图失败: {str(e)}"}
+            logger.error(f"截图失败: {url}, 错误: {e}")
+            return {"status": "error", "message": f"截图过程中发生错误: {e}"}
         finally:
             if page_id:
                 await self._close_page(page_id)
     
-    async def prtScPath(self, url, elename, eletype, elevalue, device="pc", width="", height="", ua="", wait_time: float = 1.0, wait_for_resources: bool = False) -> Dict[str, Any]:
+    async def prtScPath(self, url, elename, eletype, elevalue, device="pc", width="", height="", ua="", wait_time: float = 1.0, wait_for_resources: bool = False, custom_js: Optional[str] = None) -> Dict[str, Any]:
         """
         获取页面元素截图
         
@@ -514,160 +582,90 @@ class AsyncPrtScPlaywright:
             ua: 自定义User-Agent
             wait_time: 页面加载后额外等待时间（秒）
             wait_for_resources: 是否等待所有资源（图片、视频等）加载完成
+            custom_js: 在页面加载完成后执行的自定义JavaScript代码
         """
         page_id = None
+        start_time = time.time()
         try:
-            # 配置设备参数
             device_config = self._get_device_config(device, width, height)
-            logger.info(f"使用元素截图的设备配置: {device_config}") # 修改了日志信息，移除了 print
-            # 创建新页面
-            page_id = await self._create_page(device_config)
-            page = await self._get_page(page_id)
-            
-            # 设置自定义UA（如果提供）
             if ua:
-                await page.set_extra_http_headers({"User-Agent": ua})
-              # 导航到URL，根据wait_for_resources参数决定等待策略
-            navigation_success = await self._navigate_to_url(page, url, wait_for_resources=wait_for_resources)
-            
-            if not navigation_success:
-                return {"code": 404, "msg": "导航到页面失败"}
-            
-            # 使用用户指定的等待时间
-            logger.info(f"等待页面稳定，元素截图等待时间: {wait_time}秒")
-            await asyncio.sleep(wait_time) # 按照用户指定的时间等待，确保页面充分渲染            
-            try:
-                screenshot_bytes = None
-                if eletype == "text":
-                    try:
-                        # 使用 get_by_text 定位元素，默认精确匹配
-                        locator = page.get_by_text(elevalue, exact=True)
-                        
-                        # 等待第一个匹配的元素可见
-                        await locator.first.wait_for(state="visible", timeout=30000)
-                        await locator.first.scroll_into_view_if_needed() # 确保元素在视口内
-                        await asyncio.sleep(0.5) # 滚动后短暂等待
-                        
-                        # 对第一个匹配的元素截图
-                        screenshot_bytes = await locator.first.screenshot(type="png")
-                    except TimeoutError:
-                        return {"code": 404, "msg": f"等待文本元素 '{elevalue}' 超时或不可见"}
-                    except Error as e: # Playwright特定错误
-                        logger.error(f"文本元素 '{elevalue}' 定位或截图错误: {str(e)}")
-                        if "strict mode violation" in str(e).lower() or "matches multiple elements" in str(e).lower():
-                             return {"code": 400, "msg": f"找到多个匹配文本 '{elevalue}' 的元素。请使用更精确的文本或不同的选择策略。"}
-                        return {"code": 500, "msg": f"文本元素截图时发生Playwright错误: {str(e)}"}
-                # 特殊处理canvas元素
-                elif eletype == "canvas":
-                    # 构建canvas选择器
-                    if elevalue.startswith("xpath=") or elevalue.startswith("//"):
-                        # 用户提供了xpath方式
-                        selector = elevalue if elevalue.startswith("xpath=") else f"xpath={elevalue}"
-                    else:
-                        # 否则作为CSS选择器处理
-                        selector = elevalue
-                        
-                    # 对canvas进行截图
-                    screenshot_bytes = await self._screenshot_canvas(page, selector)
-                    if not screenshot_bytes:
-                        return {"code": 404, "msg": f"无法截取canvas内容: {selector}"}
-                        
-                # 特殊处理iframe元素
-                elif eletype == "iframe":
-                    # 构建iframe选择器
-                    if elevalue.startswith("xpath=") or elevalue.startswith("//"):
-                        # 用户提供了xpath方式
-                        selector = elevalue if elevalue.startswith("xpath=") else f"xpath={elevalue}"
-                    else:
-                        # 否则作为CSS选择器处理
-                        selector = elevalue
-                        
-                    # 对iframe内容进行截图
-                    screenshot_bytes = await self._screenshot_iframe(page, selector)
-                    if not screenshot_bytes:
-                        return {"code": 404, "msg": f"无法截取iframe内容: {selector}"}
-                else:
-                    # 根据元素类型构建选择器
-                    selector = None
-                    if eletype == "xpath":
-                        selector = f"xpath={elevalue}"
-                    elif eletype == "data": # data-* 属性
-                        selector = f"[data-{elename}='{elevalue}']"
-                    elif eletype == "attr": # 其他属性
-                        selector = f"[{elename}='{elevalue}']"
-                    elif eletype in ["id", "class", "name"]: # id, class, name 作为属性选择器
-                        selector = f"[{eletype}='{elevalue}']"
-                    elif eletype == "tag": # HTML 标签名
-                        selector = elevalue
-                    elif eletype == "css": # 用户提供的完整CSS选择器
-                        selector = elevalue
-                    else:
-                        # 未知类型，默认作为属性处理，并记录警告
-                        logger.warning(f"未知的 eletype '{eletype}'，尝试作为属性选择器 [{eletype}='{elevalue}'] 处理。")
-                        selector = f"[{eletype}='{elevalue}']"
+                device_config["user_agent"] = ua
 
-                    try:
-                        # 等待并获取元素
-                        element = await page.wait_for_selector(selector, state="visible", timeout=30000)
-                        # wait_for_selector 成功则 element 不会是 None
-                        # if not element: 
-                        #     return {"code": 404, "msg": f"未找到元素: {selector}"}
+            page_id, page = await self._create_page(device_config=device_config)
 
-                        # 截图前确保元素可见
-                        await element.scroll_into_view_if_needed()
-                        await asyncio.sleep(0.5) # 滚动后短暂等待
-                        
-                        # 截图
-                        screenshot_bytes = await element.screenshot(type="png")
-                        
-                    except TimeoutError:
-                        return {"code": 404, "msg": f"等待元素 '{selector}' 超时或不可见"}
-                
-                if screenshot_bytes:
-                    return {"code": 200, "msg": "成功", "data": screenshot_bytes}
-                else:
-                    # 此处理论上不应到达，因为前面分支要么成功截图，要么返回错误
-                    return {"code": 500, "msg": "未能获取元素截图，原因未知。"}
-                    
-            except Error as e: # Playwright 的其他 Error
-                logger.error(f"元素截图时发生Playwright错误 (eletype: {eletype}, elevalue: '{elevalue}'): {str(e)}")
-                return {"code": 500, "msg": f"元素截图错误: {str(e)}"}
-                
+            navigate_success = await self._navigate_to_url(page, url, wait_until="load", wait_for_resources=wait_for_resources)
+            if not navigate_success:
+                raise Exception(f"导航到 {url} 失败")
+
+
+            # 在页面加载完成后执行自定义JS脚本
+            if custom_js:
+                try:
+                    await page.evaluate(custom_js)
+                    logger.info("自定义JS脚本执行成功")
+                except Exception as e:
+                    logger.warning(f"执行自定义JS脚本时出错: {e}")
+            
+            if wait_time > 0:
+                await asyncio.sleep(wait_time)
+            
+            element_selector = self._construct_selector(eletype, elevalue, elename)
+            if not element_selector:
+                return {"status": "error", "message": "无效的元素选择器类型"}
+
+            # 特殊处理 canvas 和 iframe
+            if eletype.lower() == "canvas":
+                screenshot_bytes = await self._screenshot_canvas(page, element_selector)
+            elif eletype.lower() == "iframe":
+                screenshot_bytes = await self._screenshot_iframe(page, element_selector)
+            else:
+                element = await page.query_selector(element_selector)
+                if not element:
+                    return {"status": "error", "message": f"元素未找到: {element_selector}"}
+                await element.scroll_into_view_if_needed() # 确保元素可见
+                await asyncio.sleep(0.5) # 等待滚动完成和可能的懒加载
+                screenshot_bytes = await element.screenshot(type="png")
+
+            end_time = time.time()
+            logger.info(f"元素截图成功: {url}, 元素: {element_selector}, 耗时: {end_time - start_time:.2f}s")
+            return {"status": "success", "image_bytes": screenshot_bytes, "message": "元素截图成功"}
+        
+        except TimeoutError as e:
+            logger.error(f"元素截图超时: {url}, 元素: {eletype}={elevalue}, 错误: {e}")
+            return {"status": "error", "message": f"页面加载或元素截图超时: {e}"}
+        except Error as e:
+            logger.error(f"Playwright 元素截图错误: {url}, 元素: {eletype}={elevalue}, 错误: {e}")
+            return {"status": "error", "message": f"Playwright操作失败: {e}"}
         except Exception as e:
-            logger.error(f"元素截图流程中发生一般错误: {str(e)}")
-            return {"code": 500, "msg": f"元素截图失败: {str(e)}"}
+            logger.error(f"元素截图失败: {url}, 元素: {eletype}={elevalue}, 错误: {e}")
+            return {"status": "error", "message": f"元素截图过程中发生错误: {e}"}
         finally:
-            # 关闭页面释放资源
             if page_id:
                 await self._close_page(page_id)
                 
-    async def autoPrtsc(self, url, device="pc", width="", height="", ua="", element_selector="") -> Dict[str, Any]:
+    async def autoPrtsc(self, url, device="pc", width="", height="", ua="", element_selector="", custom_js: Optional[str] = None) -> Dict[str, Any]:
         """
-        自动选择整页面或元素进行截图
+        自动截图，如果提供了element_selector则截取元素，否则截取全屏。
         """
         if element_selector:
-            # 如果提供了选择器，进行元素截图
-            return await self.prtScPath(
-                url=url,
-                elename="auto",
-                eletype="css",
-                elevalue=element_selector,
-                device=device,
-                width=width,
-                height=height,
-                ua=ua
-            )
+            # 解析 element_selector, 假设格式为 "type=value" 或 "type=name:value"
+            # 为了简单起见，这里我们假设 element_selector 直接是 Playwright 支持的 selector 字符串
+            # 或者是一个更复杂的结构，需要解析
+            # 此处简化：假设 element_selector 是 "eletype=elevalue" 或 "eletype=elename:elevalue"
+            parts = element_selector.split('=', 1)
+            eletype = parts[0]
+            remaining_value = parts[1] if len(parts) > 1 else ""
+            
+            elename = ""
+            elevalue = remaining_value
+            if ':' in remaining_value and eletype.lower() in ['data', 'attr']: # 假设 data 和 attr 类型可能包含 name
+                name_parts = remaining_value.split(':', 1)
+                elename = name_parts[0]
+                elevalue = name_parts[1] if len(name_parts) > 1 else ""
+
+            return await self.prtScPath(url, elename, eletype, elevalue, device, width, height, ua, custom_js=custom_js)
         else:
-            # 否则进行整页面截图
-            return await self.prtSc(
-                url=url,
-                device=device,
-                width=width,
-                height=height,
-                ua=ua
-                # 注意：如果 autoPrtsc 也需要控制 full_page，这里也需要传递
-                # full_page=full_page # 假设 autoPrtsc 也获得了一个 full_page 参数
-            )
+            return await self.prtSc(url, device, width, height, ua, full_page=True, custom_js=custom_js)
     
     def _get_device_config(self, device, width="", height=""):
         """获取设备配置"""
@@ -833,6 +831,7 @@ class AsyncPrtScPlaywright:
             logger.error(f"截取iframe内容时出错: {str(e)}")
             return None
         
+
 
 # 如果直接运行此文件，执行测试
 if __name__ == "__main__":

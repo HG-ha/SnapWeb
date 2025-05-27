@@ -1,7 +1,13 @@
-from fastapi import FastAPI, Query, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
-from typing import Optional, Dict, Any
 import asyncio
+import sys
+
+# Set event loop policy for Windows at the very top
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+from fastapi import FastAPI, Query, HTTPException, Form, Depends
+from fastapi.responses import JSONResponse, StreamingResponse
+from typing import Optional, Dict, Any, Union
 import uvicorn
 from pydantic import BaseModel, HttpUrl, field_validator  # 更新导入
 import io
@@ -9,7 +15,6 @@ from webprtsc_playwright_async import AsyncPrtScPlaywright
 from task_manager import TaskManager, TaskStatus
 import psutil
 from contextlib import asynccontextmanager
-import sys
 
 # 全局共享的浏览器实例
 browser_instance = AsyncPrtScPlaywright()
@@ -36,6 +41,7 @@ class ScreenshotRequest(BaseModel):
     wait_time: Optional[float] = 1.0   # 页面加载后的等待时间（秒），默认1秒
     timeout: Optional[float] = 120.0    # 整个截图任务的超时时间（秒），默认120秒
     wait_for_resources: Optional[bool] = False  # 是否等待页面所有资源（图片、视频等）加载完成，默认False
+    custom_js: Optional[str] = None # 新增自定义JS脚本字段
 
     @field_validator('*')
     @classmethod
@@ -55,14 +61,61 @@ class ScreenshotRequest(BaseModel):
             return self.element_type, self.element_name, self.element_value
         return None, None, None
 
+async def create_screenshot_request(
+    # JSON 请求体 (可选)
+    request: Optional[ScreenshotRequest] = None,
+    # Form-data 字段 (可选)
+    url: Optional[str] = Form(None),
+    device: Optional[str] = Form("pc"),
+    width: Optional[str] = Form(""),
+    height: Optional[str] = Form(""),
+    ua: Optional[str] = Form(""),
+    element_type: Optional[str] = Form(""),
+    element_name: Optional[str] = Form(""),
+    element_value: Optional[str] = Form(""),
+    full_page: Optional[bool] = Form(False),
+    wait_time: Optional[float] = Form(1.0),
+    timeout: Optional[float] = Form(120.0),
+    wait_for_resources: Optional[bool] = Form(False),
+    custom_js: Optional[str] = Form(None)
+) -> ScreenshotRequest:
+    """
+    统一处理 JSON 和 form-data 请求，创建 ScreenshotRequest 对象
+    """
+    # 如果是 JSON 请求且有 request 对象，直接返回
+    if request is not None:
+        return request
+    
+    # 如果是 form-data 请求，从 Form 参数构建 ScreenshotRequest
+    if url is not None:
+        # 验证必需的 URL 参数
+        if not url.strip():
+            raise HTTPException(status_code=400, detail="URL 参数不能为空")
+        
+        # 构建请求对象
+        return ScreenshotRequest(
+            url=url,
+            device=device or "pc",
+            width=width or "",
+            height=height or "",
+            ua=ua or "",
+            element_type=element_type or "",
+            element_name=element_name or "",
+            element_value=element_value or "",
+            full_page=full_page or False,
+            wait_time=wait_time or 1.0,
+            timeout=timeout or 120.0,
+            wait_for_resources=wait_for_resources or False,
+            custom_js=custom_js
+        )
+    
+    # 如果既没有 JSON 请求体也没有 form-data 的 URL，抛出错误
+    raise HTTPException(status_code=400, detail="请提供有效的请求参数 (JSON 或 form-data)")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 启动时初始化
     try:
-        # 确保在应用启动前正确设置事件循环
-        if sys.platform == 'win32':
-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-                
         await browser_instance.initialize()
         # 启动任务监控
         asyncio.create_task(task_manager.start_monitoring())
@@ -93,10 +146,21 @@ async def root():
     return {"message": "网页截图API服务已启动"}
 
 @app.post("/screenshot/submit", response_model=Dict[str, Any])
-async def submit_screenshot(request: ScreenshotRequest):
+async def submit_screenshot(request: ScreenshotRequest = Depends(create_screenshot_request)):
     """
     提交截图任务（支持全页面或元素截图）
+    支持 JSON 和 form-data 两种请求格式
     
+    **JSON 请求示例:**
+    ```json
+    {
+        "url": "https://example.com",
+        "device": "pc",
+        "full_page": true
+    }
+    ```
+    
+    **Form-data 请求字段:**
     - **url**: 必填，网页URL
     - **device**: 可选，设备类型 (pc/phone/tablet)，默认pc
     - **width**: 可选，自定义宽度
@@ -107,7 +171,9 @@ async def submit_screenshot(request: ScreenshotRequest):
     - **element_value**: 可选，元素值或要匹配的文本
     - **full_page**: 可选 (仅当不指定元素时)，是否截取完整页面高度，默认False (截取视口高度)
     - **wait_time**: 可选，页面加载后的等待时间（秒），默认1秒
-    - **timeout**: 可选，整个截图任务的超时时间（秒），默认90秒
+    - **timeout**: 可选，整个截图任务的超时时间（秒），默认120秒
+    - **wait_for_resources**: 可选，是否等待所有资源加载，默认False
+    - **custom_js**: 可选，自定义JavaScript代码
     """
     element_type, element_name, element_value = request.get_element_info()
 
@@ -123,6 +189,8 @@ async def submit_screenshot(request: ScreenshotRequest):
             height=request.height,
             ua=request.ua,
             wait_time=request.wait_time,
+            wait_for_resources=request.wait_for_resources, # 添加 wait_for_resources
+            custom_js=request.custom_js, # 添加 custom_js
             timeout=request.timeout  # 添加 timeout 参数
         )
     else:        # 全页面截图
@@ -135,6 +203,8 @@ async def submit_screenshot(request: ScreenshotRequest):
             ua=request.ua,
             full_page=request.full_page, # 传递 full_page 参数
             wait_time=request.wait_time,
+            wait_for_resources=request.wait_for_resources, # 添加 wait_for_resources
+            custom_js=request.custom_js, # 添加 custom_js
             timeout=request.timeout  # 添加 timeout 参数
         )
     
@@ -145,10 +215,21 @@ async def submit_screenshot(request: ScreenshotRequest):
     }
 
 @app.post("/screenshot/sync")
-async def sync_screenshot(request: ScreenshotRequest):
+async def sync_screenshot(request: ScreenshotRequest = Depends(create_screenshot_request)):
     """
     同步获取截图（支持全页面或元素截图）
+    支持 JSON 和 form-data 两种请求格式
     
+    **JSON 请求示例:**
+    ```json
+    {
+        "url": "https://example.com",
+        "device": "pc",
+        "full_page": true
+    }
+    ```
+    
+    **Form-data 请求字段:**
     - **url**: 必填，网页URL
     - **device**: 可选，设备类型 (pc/phone/tablet)，默认pc
     - **width**: 可选，自定义宽度
@@ -159,7 +240,9 @@ async def sync_screenshot(request: ScreenshotRequest):
     - **element_value**: 可选，元素值或要匹配的文本
     - **full_page**: 可选 (仅当不指定元素时)，是否截取完整页面高度，默认False (截取视口高度)
     - **wait_time**: 可选，页面加载后的等待时间（秒），默认1秒
-    - **timeout**: 可选，整个截图任务的超时时间（秒），默认90秒
+    - **timeout**: 可选，整个截图任务的超时时间（秒），默认120秒
+    - **wait_for_resources**: 可选，是否等待所有资源加载，默认False
+    - **custom_js**: 可选，自定义JavaScript代码
     
     返回：直接返回图片数据或错误信息
     """
@@ -178,7 +261,9 @@ async def sync_screenshot(request: ScreenshotRequest):
                     width=request.width,
                     height=request.height,
                     ua=request.ua,
-                    wait_time=request.wait_time
+                    wait_time=request.wait_time,
+                    wait_for_resources=request.wait_for_resources, # 添加 wait_for_resources
+                    custom_js=request.custom_js # 添加 custom_js
                 ),
                 timeout=request.timeout
             )
@@ -191,28 +276,30 @@ async def sync_screenshot(request: ScreenshotRequest):
                     width=request.width,
                     height=request.height,
                     ua=request.ua,
-                    full_page=request.full_page, # 传递 full_page 参数
-                    wait_time=request.wait_time
+                    full_page=request.full_page,
+                    wait_time=request.wait_time,
+                    wait_for_resources=request.wait_for_resources, # 添加 wait_for_resources
+                    custom_js=request.custom_js # 添加 custom_js
                 ),
                 timeout=request.timeout
             )
 
         # 增加超时处理
-        if not result or result.get("code") != 200:
+        if not result or result.get("status") != "success":
             return JSONResponse(
                 status_code=500,
-                content={"code": result.get("code", 500), "msg": result.get("msg", "截图失败")}
+                content={"status": "error", "message": result.get("message", "截图失败")}
             )
         
         # 确保有数据返回
-        if not result.get("data"):
+        if not result.get("image_bytes"):
             return JSONResponse(
                 status_code=500,
-                content={"code": 500, "msg": "截图成功但没有数据返回"}
+                content={"status": "error", "message": "截图成功但没有数据返回"}
             )
             
         return StreamingResponse(
-            io.BytesIO(result["data"]),
+            io.BytesIO(result["image_bytes"]),
             media_type="image/png",
             headers={"Content-Disposition": "attachment; filename=screenshot.png"}
         )
@@ -220,12 +307,12 @@ async def sync_screenshot(request: ScreenshotRequest):
     except asyncio.TimeoutError:
         return JSONResponse(
             status_code=504,
-            content={"code": 504, "msg": f"截图超时，超过{request.timeout}秒"}
+            content={"status": "error", "message": f"截图超时，超过{request.timeout}秒"}
         )
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={"code": 500, "msg": f"截图过程出错: {str(e)}"}
+            content={"status": "error", "message": f"截图过程出错: {str(e)}"}
         )
 
 @app.get("/task/{task_id}/status")
@@ -276,21 +363,32 @@ async def get_task_result(task_id: str):
             "progress": status_info["progress"],
             "message": "任务尚未完成"
         }
-    
     result = await task_manager.get_task_result(task_id)
     
-    if not result or result.get("code") != 200:
-        return JSONResponse(content={
-            "code": result.get("code", 500),
-            "msg": result.get("msg", "任务执行失败")
-        })
+    # 处理不同格式的成功结果
+    if result:
+        # 检查是prtSc和prtScPath返回的格式 {"status": "success", "image_bytes": bytes}
+        if result.get("status") == "success" and "image_bytes" in result:
+            # 返回图片文件
+            return StreamingResponse(
+                io.BytesIO(result["image_bytes"]), 
+                media_type="image/png",
+                headers={"Content-Disposition": f"attachment; filename=screenshot_{task_id}.png"}
+            )
+        # 检查是否为旧版API格式 {"code": 200, "data": bytes}
+        elif result.get("code") == 200 and "data" in result:
+            # 返回图片文件
+            return StreamingResponse(
+                io.BytesIO(result["data"]), 
+                media_type="image/png",
+                headers={"Content-Disposition": f"attachment; filename=screenshot_{task_id}.png"}
+            )
     
-    # 返回图片文件
-    return StreamingResponse(
-        io.BytesIO(result["data"]), 
-        media_type="image/png",
-        headers={"Content-Disposition": f"attachment; filename=screenshot_{task_id}.png"}
-    )
+    # 如果没有有效结果或格式不匹配，返回错误
+    return JSONResponse(content={
+        "code": 500,
+        "msg": result.get("msg") or result.get("message", "任务执行失败")
+    })
 
 @app.delete("/task/{task_id}", response_model=Dict[str, Any])
 async def delete_task_endpoint(task_id: str):
@@ -360,11 +458,6 @@ async def get_system_stats():
     }
 
 if __name__ == "__main__":
-    # 在主程序的最开始就设置正确的事件循环策略
-    if sys.platform == 'win32':
-        # Windows 平台使用 ProactorEventLoop
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    
     uvicorn.run(
         "fastapi_webprtsc:app",
         host="0.0.0.0",

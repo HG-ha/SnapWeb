@@ -1,5 +1,11 @@
-import uuid
 import asyncio
+import sys
+
+# Set event loop policy for Windows at the very top
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+import uuid
 import time
 from typing import Dict, Any, Optional, Callable
 
