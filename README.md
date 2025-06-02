@@ -248,87 +248,57 @@
 
 **1. 同步获取百度首页的完整页面截图 (PC 默认)**
 ```bash
-curl -X 'POST' \
-  'http://127.0.0.1:8000/screenshot/sync' \
-  -H 'accept: application/json' \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "url": "https://www.baidu.com/",
-  "full_page": true
-}' \
-  --output baidu_full.png
+curl --location 'http://127.0.0.1:8000/screenshot/sync' \
+--form 'url="https://www.baidu.com/"' \
+--form 'full_page="true"' \
+--output baidu_full.png
 ```
 
 **2. 同步获取特定视口大小 (430x932) 的截图 (模拟手机)**
 ```bash
-curl -X 'POST' \
-  'http://127.0.0.1:8000/screenshot/sync' \
-  -H 'accept: application/json' \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "url": "https://www.baidu.com/",
-  "device": "phone",
-  "width": "430",
-  "height": "932",
-  "full_page": false
-}' \
-  --output baidu_viewport_430x932.png
+curl --location 'http://127.0.0.1:8000/screenshot/sync' \
+--form 'url="https://www.baidu.com/"' \
+--form 'device="phone"' \
+--form 'width="430"' \
+--form 'height="932"' \
+--form 'full_page="false"' \
+--output baidu_viewport_430x932.png
 ```
 
 **3. 同步获取页面上某个元素 (通过 CSS 选择器) 的截图**
 ```bash
-curl -X 'POST' \
-  'http://127.0.0.1:8000/screenshot/sync' \
-  -H 'accept: application/json' \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "url": "https://www.baidu.com/",
-  "element_type": "css",
-  "element_value": "#su"
-}' \
-  --output baidu_button.png
+curl --location 'http://127.0.0.1:8000/screenshot/sync' \
+--form 'url="https://www.baidu.com/"' \
+--form 'element_type="css"' \
+--form 'element_value="#su"' \
+--output baidu_button.png
 ```
 
 **4. 同步获取页面上某个元素 (通过文本内容 "百度一下") 的截图**
 ```bash
-curl -X 'POST' \
-  'http://127.0.0.1:8000/screenshot/sync' \
-  -H 'accept: application/json' \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "url": "https://www.baidu.com/",
-  "element_type": "text",
-  "element_value": "百度一下"
-}' \
-  --output baidu_text_button.png
+curl --location 'http://127.0.0.1:8000/screenshot/sync' \
+--form 'url="https://www.baidu.com/"' \
+--form 'element_type="text"' \
+--form 'element_value="百度一下"' \
+--output baidu_text_button.png
 ```
 
 **4.1. 同步获取页面上的canvas元素内容**
 ```bash
-curl -X 'POST' \
-  'http://127.0.0.1:8000/screenshot/sync' \
-  -H 'accept: application/json' \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "url": "https://www.example.com/canvas-demo",
-  "element_type": "canvas",
-  "element_value": "#my-canvas"
-}' \
-  --output canvas_content.png
+curl --location 'http://127.0.0.1:8000/screenshot/sync' \
+--form 'url="https://www.example.com/canvas-demo"' \
+--form 'element_type="canvas"' \
+--form 'element_value="#my-canvas"' \
+--output canvas_content.png
 ```
 
 **4.2. 同步获取iframe内的内容**
 ```bash
-curl -X 'POST' \
-  'http://127.0.0.1:8000/screenshot/sync' \
-  -H 'accept: application/json' \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "url": "https://www.example.com/iframe-page",
-  "element_type": "iframe",
-  "element_value": "iframe[src*=\\"embedded-content\\"]"
-}' \
-  --output iframe_content.png
+curl --location 'http://127.0.0.1:8000/screenshot/sync' \
+--form 'url="https://www.example.com/iframe-page"' \
+--form 'element_type="iframe"' \
+--form 'element_value="iframe[src*=\\"embedded-content\\"]"' \
+--output iframe_content.png
 ```
 
 **5. 异步提交截图任务**
@@ -347,35 +317,25 @@ curl -X 'POST' \
 
 **5.1 使用自定义等待时间和超时时间的截图任务**
 ```bash
-curl -X 'POST' \
-  'http://127.0.0.1:8000/screenshot/sync' \
-  -H 'accept: application/json' \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "url": "https://www.example.com/",
-  "device": "pc",
-  "full_page": true,
-  "wait_time": 5.0,
-  "timeout": 150.0
-}' \
-  --output example_with_longer_wait.png
+curl --location 'http://127.0.0.1:8000/screenshot/sync' \
+--form 'url="https://www.example.com/"' \
+--form 'device="pc"' \
+--form 'full_page="true"' \
+--form 'wait_time="5.0"' \
+--form 'timeout="150.0"' \
+--output example_with_longer_wait.png
 ```
 
 **5.2 使用资源等待功能的截图任务 (建议配合足够的 wait_time 和 timeout)**
 ```bash
-curl -X 'POST' \
-  'http://127.0.0.1:8000/screenshot/sync' \
-  -H 'accept: application/json' \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "url": "https://www.example.com/complex-page-with-many-resources",
-  "device": "pc",
-  "full_page": true,
-  "wait_for_resources": true,
-  "wait_time": 3.0,
-  "timeout": 180.0
-}' \
-  --output example_with_resources_loaded.png
+curl --location 'http://127.0.0.1:8000/screenshot/sync' \
+--form 'url="https://www.example.com/complex-page-with-many-resources"' \
+--form 'device="pc"' \
+--form 'full_page="true"' \
+--form 'wait_for_resources="true"' \
+--form 'wait_time="3.0"' \
+--form 'timeout="180.0"' \
+--output example_with_resources_loaded.png
 ```
 
 **5.3 使用 custom_js 参数自动操作页面并截图**
