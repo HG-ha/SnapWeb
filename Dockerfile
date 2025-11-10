@@ -1,5 +1,5 @@
-# 使用包含更多系统工具的基础镜像
-FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+# 使用最新的 Playwright Python 官方镜像
+FROM mcr.microsoft.com/playwright/python:v1.52.0-jammy
 
 # 设置工作目录
 WORKDIR /app
