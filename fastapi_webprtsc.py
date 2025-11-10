@@ -136,7 +136,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="网页截图API",
     description="基于Playwright的异步网页截图服务",
-    version="0.0.5",
+    version="0.0.41",
     lifespan=lifespan
 )
 
