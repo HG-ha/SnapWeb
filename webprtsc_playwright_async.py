@@ -441,8 +441,66 @@ class AsyncPrtScPlaywright:
                 logger.info(f"页面 {page_id} 及其上下文已关闭")
             except Exception as e:
                 logger.error(f"关闭页面 {page_id} 或其上下文时出错: {e}")
-            # finally: # pop已经移除了元素
-            #     pass 
+
+    async def _close_page_internal(self, page_id):
+        """内部使用的页面关闭方法，避免锁问题"""
+        page_info = self._pages.get(page_id)
+        if page_info:
+            try:
+                await page_info["page"].close()
+                if page_info.get("context"):
+                    await page_info["context"].close()
+                del self._pages[page_id]
+                logger.info(f"页面 {page_id} 及其上下文已关闭(内部)")
+            except Exception as e:
+                logger.error(f"内部关闭页面 {page_id} 或其上下文时出错: {e}")
+
+    async def _scroll_page_for_full_screenshot(self, page: Page):
+        """
+        滚动页面以确保所有内容加载完成（特别是懒加载的图片和内容）
+        
+        参数:
+            page: Playwright页面对象
+        """
+        try:
+            # 获取页面总高度
+            total_height = await page.evaluate("document.body.scrollHeight")
+            viewport_height = await page.evaluate("window.innerHeight")
+            
+            # 如果页面高度小于视口高度，无需滚动
+            if total_height <= viewport_height:
+                return
+            
+            # 分步滚动页面
+            current_position = 0
+            scroll_step = viewport_height  # 每次滚动一个视口高度
+            
+            while current_position < total_height:
+                # 滚动到下一个位置
+                await page.evaluate(f"window.scrollTo(0, {current_position})")
+                await asyncio.sleep(0.2)  # 等待内容加载
+                
+                # 更新位置
+                current_position += scroll_step
+                
+                # 重新获取页面高度（因为懒加载可能增加页面高度）
+                new_height = await page.evaluate("document.body.scrollHeight")
+                if new_height > total_height:
+                    total_height = new_height
+            
+            # 滚动回顶部
+            await page.evaluate("window.scrollTo(0, 0)")
+            await asyncio.sleep(0.3)  # 等待页面稳定
+            
+            logger.info(f"页面滚动完成，总高度: {total_height}px")
+            
+        except Exception as e:
+            logger.warning(f"页面滚动时出错: {e}")
+            # 即使滚动失败，也尝试回到顶部
+            try:
+                await page.evaluate("window.scrollTo(0, 0)")
+            except:
+                pass
             
     async def _navigate_to_url(self, page: Page, url: str, wait_until: str = "domcontentloaded", max_retries: int = 3, wait_for_resources: bool = False) -> bool:
         """
